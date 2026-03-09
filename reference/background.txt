@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>JARVIS</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    width: 100vw;
+    height: 100vh;
+    overflow: hidden;
+    background: #000;
+  }
+  canvas {
+    position: fixed;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const canvas = document.getElementById('c');
+const ctx    = canvas.getContext('2d');
+
+let W, H, cx, cy, maxDist;
+let vertices = [];   // {x, y, dist} — all hex corner points
+let edges    = [];   // {ax, ay, bx, by, midDist} — hex edges
+let time     = 0;
+
+const HEX_R       = 22;      // hex circumradius (slightly larger)
+const DOT_R       = 1.3;
+const PULSE_SPEED = 0.005;
+const PULSE_WIDTH = 0.28;
+const START_FRAC  = 0.42;
+
+function resize() {
+  W = canvas.width  = window.innerWidth;
+  H = canvas.height = window.innerHeight;
+  cx = W / 2;
+  cy = H / 2;
+  maxDist = Math.sqrt(cx * cx + cy * cy);
+  buildHexGrid();
+}
+
+function buildHexGrid() {
+  vertices = [];
+  edges    = [];
+
+  const colStep = HEX_R * 1.5;
+  const rowStep = HEX_R * Math.sqrt(3);
+
+  const cols = Math.ceil(W / colStep) + 4;
+  const rows = Math.ceil(H / rowStep) + 4;
+
+  const vertMap = new Map();
+  const edgeSet = new Set();
+
+  function vkey(x, y) {
+    return `${Math.round(x * 10)},${Math.round(y * 10)}`;
+  }
+  function addVertex(x, y) {
+    const k = vkey(x, y);
+    if (!vertMap.has(k)) {
+      const dx = x - cx, dy = y - cy;
+      vertMap.set(k, { x, y, dist: Math.sqrt(dx*dx + dy*dy) });
+    }
+    return k;
+  }
+  function addEdge(x1, y1, x2, y2) {
+    const k1 = vkey(x1, y1), k2 = vkey(x2, y2);
+    const ek = k1 < k2 ? `${k1}|${k2}` : `${k2}|${k1}`;
+    if (!edgeSet.has(ek)) {
+      edgeSet.add(ek);
+      const mx = (x1+x2)/2, my = (y1+y2)/2;
+      const dx = mx - cx, dy = my - cy;
+      edges.push({ x1, y1, x2, y2, midDist: Math.sqrt(dx*dx + dy*dy) });
+    }
+  }
+
+  for (let col = -2; col < cols; col++) {
+    for (let row = -2; row < rows; row++) {
+      const hx = cx + (col - cols/2) * colStep;
+      const hy = cy + (row - rows/2) * rowStep + (col % 2 === 0 ? 0 : rowStep/2);
+
+      const corners = [];
+      for (let i = 0; i < 6; i++) {
+        const angle = Math.PI / 180 * (60 * i);
+        corners.push([hx + HEX_R * Math.cos(angle), hy + HEX_R * Math.sin(angle)]);
+      }
+
+      corners.forEach(([vx, vy]) => addVertex(vx, vy));
+
+      for (let i = 0; i < 6; i++) {
+        const [ax, ay] = corners[i];
+        const [bx, by] = corners[(i+1) % 6];
+        addEdge(ax, ay, bx, by);
+      }
+    }
+  }
+
+  vertices = Array.from(vertMap.values());
+}
+
+// Visibility mask: invisible at center, visible at edges
+function radialMask(dist) {
+  const start = maxDist * START_FRAC;
+  if (dist <= start) return 0;
+  const t = Math.min((dist - start) / (maxDist - start), 1.0);
+  return t * t * (3 - 2 * t);
+}
+
+// Repeating pulse wave — loops endlessly, no fade in/out
+function pulseVal(dist) {
+  const startDist = maxDist * START_FRAC;
+  if (dist < startDist) return 0;
+  const d = (dist - startDist) / (maxDist - startDist); // 0..1
+  const t = (time * PULSE_SPEED) % 1.0;                 // loops 0→1 forever
+
+  // Signed distance from pulse head, wrapped so it only travels forward
+  const phase = ((d - t) + 1.0) % 1.0;
+  // Only the trailing edge matters (phase near 0 = at the wavefront)
+  // Clamp to avoid wrap-around glow at the back
+  if (phase > PULSE_WIDTH * 4) return 0;
+
+  return Math.exp(-(phase * phase) / (2 * PULSE_WIDTH * PULSE_WIDTH));
+}
+
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+
+  const bg = ctx.createRadialGradient(cx, cy, 0, cx, cy, maxDist * 0.85);
+  bg.addColorStop(0,   '#0B1520');
+  bg.addColorStop(0.5, '#07101a');
+  bg.addColorStop(1,   '#000000');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, W, H);
+
+  // ── Edges ──
+  ctx.lineWidth = 0.5;
+  for (let i = 0; i < edges.length; i++) {
+    const e    = edges[i];
+    const mask = radialMask(e.midDist);
+    if (mask < 0.008) continue;
+
+    const pulse = pulseVal(e.midDist);
+
+    // Static grey base
+    const staticA = mask * 0.11;
+    ctx.strokeStyle = `rgba(155, 163, 170, ${staticA})`;
+    ctx.beginPath();
+    ctx.moveTo(e.x1, e.y1);
+    ctx.lineTo(e.x2, e.y2);
+    ctx.stroke();
+
+    // Teal pulse tint — just colours the line, no brightening
+    if (pulse > 0.01) {
+      ctx.strokeStyle = `rgba(1, 242, 242, ${pulse * mask * 0.13})`;
+      ctx.beginPath();
+      ctx.moveTo(e.x1, e.y1);
+      ctx.lineTo(e.x2, e.y2);
+      ctx.stroke();
+    }
+  }
+
+  // ── Dots ──
+  for (let i = 0; i < vertices.length; i++) {
+    const v    = vertices[i];
+    const mask = radialMask(v.dist);
+    if (mask < 0.008) continue;
+
+    const pulse = pulseVal(v.dist);
+
+    // Static grey dot
+    ctx.fillStyle = `rgba(148, 155, 162, ${mask * 0.50})`;
+    ctx.beginPath();
+    ctx.arc(v.x, v.y, DOT_R, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Teal pulse tint on dot — same low opacity, no glow
+    if (pulse > 0.01) {
+      ctx.fillStyle = `rgba(1, 242, 242, ${pulse * mask * 0.18})`;
+      ctx.beginPath();
+      ctx.arc(v.x, v.y, DOT_R, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  time += 1;
+  requestAnimationFrame(draw);
+}
+
+window.addEventListener('resize', resize);
+resize();
+draw();
+</script>
+</body>
+</html>
