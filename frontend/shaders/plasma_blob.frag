@@ -10,7 +10,7 @@ uniform float uBlobRadius;  // radius in pixels
 
 out vec4 fragColor;
 
-// ─── Simplex noise helpers (ported from blob.txt) ───
+// ─── Simplex noise helpers ───
 
 vec3 mod289v3(vec3 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
 vec4 mod289v4(vec4 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
@@ -93,8 +93,8 @@ void main() {
     // Distance from center, normalized to blob radius
     float dist = length(uv) / uBlobRadius;
 
-    // Voice-reactive radius distortion
-    float ampBoost = 1.0 + uAmplitude * 0.25;
+    // Voice-reactive radius distortion (gentle)
+    float ampBoost = 1.0 + uAmplitude * 0.18;
 
     // Discard pixels outside the sphere
     if (dist > ampBoost) {
@@ -106,16 +106,16 @@ void main() {
     float z = sqrt(max(0.0, 1.0 - dist * dist / (ampBoost * ampBoost)));
     vec3 normal = normalize(vec3(uv / uBlobRadius, z));
 
-    // Plasma parameters (matching blob.txt)
+    // Plasma parameters — tuned to match blob.html exactly
     float timeScale = 0.78;
     float plasmaScale = 0.1404;
-    float plasmaBrightness = 1.31;
+    float plasmaBrightness = 0.90;   // lowered — no wash-out
     float voidThreshold = 0.072;
 
-    // Voice-reactive distortion: amplifies noise displacement
+    // Voice-reactive distortion
     float voiceDistortion = 1.0 + uAmplitude * 1.5;
 
-    // Domain-warped FBM plasma (from blob.txt)
+    // Domain-warped FBM plasma
     vec3 pos = normal * plasmaScale * 7.0;
     float t = uTime * timeScale;
 
@@ -136,26 +136,26 @@ void main() {
 
     vec3 color = mix(colorDeep, colorMid, smoothstep(voidThreshold, 0.5, tt));
     color = mix(color, colorBright, smoothstep(0.5, 0.8, tt));
-    color = mix(color, cWhite, smoothstep(0.8, 1.0, tt));
+    color = mix(color, cWhite, smoothstep(0.85, 1.0, tt));  // less white bleed
 
-    // Alpha from density
-    float alpha = smoothstep(voidThreshold, 0.7, tt);
+    // Alpha from density — deep voids stay transparent
+    float alpha = smoothstep(voidThreshold, 0.55, tt);
 
     // Depth-dependent alpha (facing ratio)
-    float facing = z;  // already dot(normal, viewDir) for a front-facing sphere
+    float facing = z;
     float depthFactor = (facing + 1.0) * 0.5;
-    float finalAlpha = alpha * (0.02 + 0.98 * depthFactor);
+    float finalAlpha = alpha * (0.05 + 0.95 * depthFactor);
 
-    // Fresnel edge glow (from blob.txt shell)
-    float fresnel = pow(1.0 - z, 2.5);
-    float shellOpacity = 0.41 + uAmplitude * 0.3;  // voice brightens edge
+    // ─── Fresnel edge — very thin, subtle, like blob.html front shell ───
+    float fresnel = pow(1.0 - z, 4.0);  // sharp thin edge
+    float shellOpacity = 0.12 + uAmplitude * 0.10;
     vec3 fresnelColor = colorBright * fresnel * shellOpacity;
 
-    // Combine plasma + fresnel
+    // Combine plasma + fresnel (NO sparkle particles)
     vec3 finalColor = color * plasmaBrightness + fresnelColor;
 
     // Soft edge fade
-    float edgeFade = smoothstep(ampBoost, ampBoost - 0.05, dist);
+    float edgeFade = smoothstep(ampBoost, ampBoost - 0.06, dist);
 
-    fragColor = vec4(finalColor, finalAlpha * edgeFade + fresnel * shellOpacity * edgeFade);
+    fragColor = vec4(finalColor, (finalAlpha + fresnel * shellOpacity) * edgeFade);
 }
