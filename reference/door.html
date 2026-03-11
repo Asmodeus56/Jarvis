@@ -18,20 +18,45 @@ const H = c.height = window.innerHeight;
 const cx = W / 2, cy = H / 2;
 
 // ─── Seam Geometry ────────────────────────────────────────────────
-const BX = 64, BY = H * 0.135;
+// FIX: the center straight appears double because UP[0] and DOWN[0] are
+// both full straight segments sharing the origin. Solution: make the first
+// segment of each path HALF a vertical step, so UP half + DOWN half = one
+// full step visually — matching every other straight.
+const SEG_ANGLE = 34 * Math.PI / 180;
+const N = 10;   // total segments per path (first is half-step, rest are full)
 
-// Upper spark path: origin (cx,cy) → top of screen
-const UP = [
-  { ax: cx,      ay: cy,      bx: cx+BX, by: cy-BY   },   // slant  ↗
-  { ax: cx+BX,   ay: cy-BY,   bx: cx+BX, by: BY       },   // straight ↑
-  { ax: cx+BX,   ay: BY,      bx: cx,    by: 0         }    // slant  ↖
-];
-// Lower spark path: origin (cx,cy) → bottom of screen (mirrored)
-const DOWN = [
-  { ax: cx,      ay: cy,      bx: cx-BX, by: cy+BY   },   // slant  ↙
-  { ax: cx-BX,   ay: cy+BY,   bx: cx-BX, by: H-BY     },   // straight ↓
-  { ax: cx-BX,   ay: H-BY,    bx: cx,    by: H         }    // slant  ↘
-];
+// Full vertical step for segments 1…N (first seg is half this)
+const VERT_U = cy / (N - 0.5);   // so half + (N-1) full = cy
+const VERT_D = (H - cy) / (N - 0.5);
+
+function slantDX(vert) { return vert * Math.tan(SEG_ANGLE); }
+
+function buildPath(startX, startY, vertStep, sign) {
+  const segs = [];
+  const hDirs = [+1, -1, +1, -1, +1];
+  let x = startX, y = startY, si = 0;
+  for (let i = 0; i < N; i++) {
+    // First segment is half-step straight, rest follow normal alternation
+    const isFirst = i === 0;
+    const step    = isFirst ? vertStep * 0.5 : vertStep;
+    const ny      = y + step * sign;
+
+    if (isFirst || i % 2 === 0) {
+      // straight
+      segs.push({ ax: x, ay: y, bx: x, by: ny });
+    } else {
+      // slant
+      const dx = slantDX(vertStep) * hDirs[si++];
+      segs.push({ ax: x, ay: y, bx: x + dx, by: ny });
+      x += dx;
+    }
+    y = ny;
+  }
+  return segs;
+}
+
+const UP   = buildPath(cx, cy, VERT_U, -1);
+const DOWN = buildPath(cx, cy, VERT_D, +1);
 
 function segLen(s) { return Math.hypot(s.bx - s.ax, s.by - s.ay); }
 function pathLen(p) { return p.reduce((a, s) => a + segLen(s), 0); }
@@ -49,124 +74,189 @@ function pointAt(path, t) {
   return { x: last.bx, y: last.by };
 }
 
-// ─── Metal Texture (pre-render, called once) ──────────────────────
+// ─── Hash helpers ─────────────────────────────────────────────────
+function h1(n) { return ((Math.sin(n * 127.1 + 311.7) * 43758.5453) % 1 + 1) % 1; }
+function h2(n) { return ((Math.cos(n * 269.5 + 183.3) * 31248.7)    % 1 + 1) % 1; }
+function h3(n) { return ((Math.sin(n * 311.7 + 127.1) * 55127.3211) % 1 + 1) % 1; }
+
+// ─── Metal Texture ────────────────────────────────────────────────
 const metal = document.createElement('canvas');
 metal.width = W; metal.height = H;
 const mc = metal.getContext('2d');
 
 (function buildMetal() {
-  // Base horizontal gradient — dark gunmetal blue-grey
-  const g = mc.createLinearGradient(0, 0, W, 0);
-  g.addColorStop(0.00, '#28282e');
-  g.addColorStop(0.12, '#3c3c44');
-  g.addColorStop(0.28, '#343440');
-  g.addColorStop(0.46, '#44444e');
-  g.addColorStop(0.54, '#4a4a56');
-  g.addColorStop(0.72, '#3a3a44');
-  g.addColorStop(0.88, '#404048');
-  g.addColorStop(1.00, '#262630');
-  mc.fillStyle = g; mc.fillRect(0, 0, W, H);
 
-  // Top/bottom darkness
-  const vg = mc.createLinearGradient(0, 0, 0, H);
-  vg.addColorStop(0,    'rgba(0,0,0,.55)');
-  vg.addColorStop(0.18, 'rgba(0,0,0,.12)');
-  vg.addColorStop(0.5,  'rgba(0,0,0,0)');
-  vg.addColorStop(0.82, 'rgba(0,0,0,.12)');
-  vg.addColorStop(1,    'rgba(0,0,0,.58)');
-  mc.fillStyle = vg; mc.fillRect(0, 0, W, H);
+  // 1. BASE
+  const base = mc.createLinearGradient(0, 0, W, H);
+  base.addColorStop(0.00, '#252a2e');
+  base.addColorStop(0.30, '#2d3238');
+  base.addColorStop(0.55, '#2a2f35');
+  base.addColorStop(0.80, '#282d33');
+  base.addColorStop(1.00, '#232830');
+  mc.fillStyle = base; mc.fillRect(0, 0, W, H);
 
-  // Horizontal brush striations (deterministic, fast pseudo-noise)
+  // 2. HORIZONTAL micro-grain
   for (let y = 0; y < H; y++) {
-    const n = (Math.sin(y * 127.1 + 311.7) * 43758.5453) % 1;
-    const r = n < 0 ? n + 1 : n;
-    const b = 120 + (r * 100) | 0;
-    mc.strokeStyle = `rgba(${b},${b},${b + 5},${0.008 + r * 0.022})`;
+    const n = h1(y);
+    const v = 42 + (n * 28) | 0;
+    mc.strokeStyle = `rgba(${v+3},${v},${v+4},${0.010 + n * 0.022})`;
     mc.lineWidth = 1;
     mc.beginPath(); mc.moveTo(0, y); mc.lineTo(W, y); mc.stroke();
   }
 
-  // Faint vertical scratches
-  for (const fx of [0.19, 0.44, 0.61, 0.78]) {
-    const sx = fx * W;
-    const sg = mc.createLinearGradient(sx, 0, sx, H);
-    sg.addColorStop(0,   'rgba(180,180,190,0)');
-    sg.addColorStop(0.3, 'rgba(180,180,190,.055)');
-    sg.addColorStop(0.7, 'rgba(180,180,190,.055)');
-    sg.addColorStop(1,   'rgba(180,180,190,0)');
-    mc.strokeStyle = sg; mc.lineWidth = 1;
-    mc.beginPath(); mc.moveTo(sx, 0); mc.lineTo(sx + 0.7, H); mc.stroke();
+  // 3. SUBTLE VERTICAL BANDS
+  for (const [fx, al] of [[.18,.07],[.40,.065],[.62,.065],[.82,.06]]) {
+    const bx = fx*W, bw = W*.11;
+    const bg = mc.createLinearGradient(bx-bw, 0, bx+bw, 0);
+    bg.addColorStop(0,'rgba(80,90,100,0)');
+    bg.addColorStop(.5,`rgba(80,90,100,${al})`);
+    bg.addColorStop(1,'rgba(80,90,100,0)');
+    mc.fillStyle = bg; mc.fillRect(bx-bw, 0, bw*2, H);
   }
 
-  // Diagonal sheen
-  const sh = mc.createLinearGradient(W * .22, 0, W * .62, H);
-  sh.addColorStop(0,   'rgba(255,255,255,0)');
-  sh.addColorStop(.42, 'rgba(255,255,255,.05)');
-  sh.addColorStop(.50, 'rgba(255,255,255,.09)');
-  sh.addColorStop(.58, 'rgba(255,255,255,.05)');
-  sh.addColorStop(1,   'rgba(255,255,255,0)');
-  mc.fillStyle = sh; mc.fillRect(0, 0, W, H);
+  // 4. ── RUST — proper streaky corrosion ────────────────────────
+  // Rust on metal is NOT round blobs — it forms along surface irregularities:
+  // thin irregular drips, rough-edged patches that follow grain direction
+  // Strategy: draw each rust cluster as multiple overlapping thin strokes
+  // with jagged edges + oxide spatter dots
 
-  // Structural horizontal panel lines
-  for (const fy of [.17, .39, .61, .83]) {
-    const py = fy * H;
-    mc.strokeStyle = 'rgba(0,0,0,.4)'; mc.lineWidth = 2;
-    mc.beginPath(); mc.moveTo(0, py); mc.lineTo(W, py); mc.stroke();
-    mc.strokeStyle = 'rgba(100,100,115,.2)'; mc.lineWidth = 1;
-    mc.beginPath(); mc.moveTo(0, py + 2); mc.lineTo(W, py + 2); mc.stroke();
-  }
-
-  // Rust patches
-  const rusts = [
-    [.11,.16,.04,.54],[.84,.26,.03,.48],[.07,.74,.035,.44],
-    [.88,.62,.028,.48],[.59,.07,.024,.42],[.23,.89,.032,.43],[.77,.84,.026,.40],
+  const rustClusters = [
+    // [cx, cy, intensity, size]   — all near edges
+    { x: W*0.03,  y: H*0.08,  a: 0.55, s: 0.038 },
+    { x: W*0.97,  y: H*0.12,  a: 0.48, s: 0.032 },
+    { x: W*0.05,  y: H*0.88,  a: 0.52, s: 0.035 },
+    { x: W*0.95,  y: H*0.82,  a: 0.45, s: 0.030 },
+    { x: W*0.02,  y: H*0.48,  a: 0.38, s: 0.024 },
+    { x: W*0.98,  y: H*0.55,  a: 0.34, s: 0.020 },
+    { x: W*0.50,  y: H*0.02,  a: 0.28, s: 0.018 },
+    { x: W*0.26,  y: H*0.97,  a: 0.30, s: 0.018 },
+    { x: W*0.74,  y: H*0.96,  a: 0.28, s: 0.016 },
   ];
-  for (const [fx,fy,fr,intensity] of rusts) {
-    const rx = fx*W, ry = fy*H, rr = fr * Math.min(W,H);
-    const rg = mc.createRadialGradient(rx,ry,0, rx,ry,rr);
-    rg.addColorStop(0,   `rgba(138,62,14,${intensity})`);
-    rg.addColorStop(.4,  `rgba(108,44,8,${intensity*.65})`);
-    rg.addColorStop(.75, `rgba(84,32,4,${intensity*.3})`);
-    rg.addColorStop(1,   'rgba(65,24,2,0)');
-    mc.fillStyle = rg;
-    mc.beginPath(); mc.arc(rx,ry,rr,0,Math.PI*2); mc.fill();
-    // Rust specks around patch
-    for (let i = 0; i < 9; i++) {
-      const a = (Math.sin(i*127.1 + fx*311.7)*43758.5) % (Math.PI*2);
-      const d = rr * (.55 + ((Math.cos(i*269.5 + fy*183.3)*43758.5) % 1 + 1) % 1 * 1.15);
-      const pr = .8 + ((Math.sin(i*419.2 + fr*531.7)*43758.5) % 1 + 1) % 1 * 2.2;
-      const rv = ((Math.cos(i*234.1)*43758.5) % 1 + 1) % 1;
-      mc.fillStyle = `rgba(${110+(rv*40)|0},${28+(rv*22)|0},${5+(rv*12)|0},${.22 + rv*.32})`;
-      mc.beginPath(); mc.arc(rx + Math.cos(a)*d, ry + Math.sin(a)*d, pr, 0, Math.PI*2); mc.fill();
+
+  for (const cl of rustClusters) {
+    const BASE_R = cl.s * Math.min(W, H);
+    const seed   = cl.x * 0.001 + cl.y * 0.0007;
+
+    // Draw 12-18 individual rust streaks per cluster
+    const nStreaks = 12 + Math.floor(h1(seed) * 7);
+    for (let k = 0; k < nStreaks; k++) {
+      const ks = seed + k * 0.317;
+      // Random angle biased toward vertical (rust drips down)
+      const angle   = (h1(ks) - 0.5) * 0.9 + Math.PI * 0.5; // near vertical
+      const startDist = h2(ks) * BASE_R * 0.6;
+      const len       = BASE_R * (0.3 + h3(ks) * 1.2);
+      const width     = 0.8 + h1(ks + 0.5) * 2.4;
+      const opacity   = cl.a * (0.25 + h2(ks + 0.7) * 0.65);
+
+      // Streak start point (scattered around cluster center)
+      const spreadAngle = h1(ks + 0.1) * Math.PI * 2;
+      const sx = cl.x + Math.cos(spreadAngle) * startDist;
+      const sy = cl.y + Math.sin(spreadAngle) * startDist;
+      const ex = sx + Math.cos(angle) * len;
+      const ey = sy + Math.sin(angle) * len;
+
+      // Rust color variation: orange-brown to dark brown
+      const rv   = h3(ks + 0.3);
+      const rr   = (140 + rv * 35) | 0;
+      const rg   = (48  + rv * 22) | 0;
+      const rb   = (4   + rv * 8)  | 0;
+
+      // Gradient along streak (dark at top, more orange mid, fade at end)
+      const sg = mc.createLinearGradient(sx, sy, ex, ey);
+      sg.addColorStop(0,   `rgba(${rr-20},${rg-10},${rb},${opacity * 0.4})`);
+      sg.addColorStop(0.2, `rgba(${rr},${rg},${rb},${opacity})`);
+      sg.addColorStop(0.6, `rgba(${rr+10},${rg+5},${rb},${opacity * 0.7})`);
+      sg.addColorStop(1,   `rgba(${rr-10},${rg-8},${rb},0)`);
+
+      mc.strokeStyle = sg;
+      mc.lineWidth   = width;
+      mc.lineCap     = 'round';
+
+      // Add slight waviness to streak using quadratic curve
+      const midX = (sx + ex) * 0.5 + (h1(ks + 0.9) - 0.5) * BASE_R * 0.18;
+      const midY = (sy + ey) * 0.5 + (h2(ks + 0.9) - 0.5) * BASE_R * 0.12;
+      mc.beginPath();
+      mc.moveTo(sx, sy);
+      mc.quadraticCurveTo(midX, midY, ex, ey);
+      mc.stroke();
+    }
+
+    // Oxide spatter dots around cluster
+    const nDots = 20 + Math.floor(h2(seed + 0.5) * 25);
+    for (let d = 0; d < nDots; d++) {
+      const ds    = seed + d * 0.199 + 3.7;
+      const angle = h1(ds) * Math.PI * 2;
+      const dist  = h2(ds) * BASE_R * 1.4;
+      const px    = cl.x + Math.cos(angle) * dist;
+      const py    = cl.y + Math.sin(angle) * dist;
+      const pr    = 0.4 + h3(ds) * 1.2;
+      const rv    = h1(ds + 0.4);
+      const alpha = cl.a * (0.12 + rv * 0.40) * (1 - dist / (BASE_R * 1.4));
+      const rr    = (120 + rv * 45) | 0;
+      const rg    = (38  + rv * 20) | 0;
+      mc.fillStyle = `rgba(${rr},${rg},4,${alpha.toFixed(3)})`;
+      mc.beginPath(); mc.arc(px, py, pr, 0, Math.PI * 2); mc.fill();
     }
   }
 
-  // Bolt heads
-  const bolts = [
-    [.035,.035],[.965,.035],[.035,.965],[.965,.965],
-    [.035,.50],[.965,.50],[.50,.035],[.50,.965],
-    [.26,.035],[.74,.035],[.26,.965],[.74,.965],
-    [.035,.26],[.035,.74],[.965,.26],[.965,.74],
-  ];
-  const boltR = Math.min(W,H) * .009;
-  for (const [fx,fy] of bolts) {
-    const rx = fx*W, ry = fy*H;
-    mc.save();
-    mc.shadowColor = 'rgba(0,0,0,.65)'; mc.shadowBlur = 5;
-    mc.shadowOffsetX = 1.5; mc.shadowOffsetY = 1.5;
-    const bg = mc.createRadialGradient(rx-boltR*.3, ry-boltR*.35, 0, rx, ry, boltR);
-    bg.addColorStop(0, '#7e7e8a'); bg.addColorStop(.5, '#4e4e5a'); bg.addColorStop(1, '#1e1e24');
-    mc.fillStyle = bg;
-    mc.beginPath(); mc.arc(rx,ry,boltR,0,Math.PI*2); mc.fill();
-    mc.restore();
-    mc.fillStyle = 'rgba(255,255,255,.13)';
-    mc.beginPath(); mc.arc(rx-boltR*.25, ry-boltR*.3, boltR*.32, 0, Math.PI*2); mc.fill();
+  // 5. SURFACE SCRATCHES
+  for (const fx of [.14,.32,.55,.70,.85]) {
+    const sx = fx*W + (h1(fx*9)-.5)*10;
+    const sg = mc.createLinearGradient(sx,0,sx,H);
+    sg.addColorStop(0,'rgba(0,0,0,0)'); sg.addColorStop(.2,'rgba(0,0,0,.07)');
+    sg.addColorStop(.5,'rgba(0,0,0,.10)'); sg.addColorStop(.8,'rgba(0,0,0,.07)');
+    sg.addColorStop(1,'rgba(0,0,0,0)');
+    mc.strokeStyle = sg; mc.lineWidth = .7;
+    mc.beginPath(); mc.moveTo(sx, 0); mc.lineTo(sx+1, H); mc.stroke();
   }
 
-  // Radial vignette
-  const vig = mc.createRadialGradient(W/2,H/2,H*.22, W/2,H/2,H*.82);
-  vig.addColorStop(0, 'rgba(0,0,0,0)'); vig.addColorStop(1, 'rgba(0,0,0,.6)');
+  // 6. SEMICIRCLE SHINE — pixel-rasterized filled dome
+  const shX = W * 0.5;
+  const shY = H;
+  const shR = W * 0.34;
+  const TILE = 4;
+
+  const boxX = Math.floor((shX - shR) / TILE) * TILE;
+  const boxY = Math.floor((shY - shR) / TILE) * TILE;
+
+  for (let ty = boxY; ty < shY; ty += TILE) {
+    for (let tx = boxX; tx < boxX + shR * 2; tx += TILE) {
+      const pcx  = tx + TILE * 0.5;
+      const pcy  = ty + TILE * 0.5;
+      const dist = Math.sqrt((pcx - shX) ** 2 + (pcy - shY) ** 2);
+      if (dist > shR || pcy > shY) continue;
+      const nr     = dist / shR;
+      const fill   = Math.pow(1 - nr, 1.6);
+      let alpha    = fill * 0.28;
+      if (nr > 0.72) {
+        const edgeT = (nr - 0.72) / 0.28;
+        if (h1(tx * 0.07 + ty * 0.13) > 1 - edgeT) continue;
+        alpha *= (1 - edgeT * 0.6);
+      }
+      if (alpha < 0.004) continue;
+      const bright = (180 + (1 - nr) * 55) | 0;
+      mc.fillStyle = `rgba(${bright},${bright+6},${bright+16},${alpha.toFixed(3)})`;
+      mc.fillRect(tx, ty, TILE, TILE);
+    }
+  }
+
+  // 7. EDGE SHADOWS
+  const eW = W*.05, eH = H*.05;
+  [
+    [mc.createLinearGradient(0,0,eW,0),   0,    0,  eW, H],
+    [mc.createLinearGradient(W,0,W-eW,0), W-eW, 0,  eW, H],
+    [mc.createLinearGradient(0,0,0,eH),   0,    0,  W,  eH],
+    [mc.createLinearGradient(0,H,0,H-eH), 0, H-eH,  W,  eH],
+  ].forEach(([g,x,y,w,hh]) => {
+    g.addColorStop(0,'rgba(0,0,0,.55)'); g.addColorStop(1,'rgba(0,0,0,0)');
+    mc.fillStyle = g; mc.fillRect(x, y, w, hh);
+  });
+
+  // 8. VIGNETTE
+  const vig = mc.createRadialGradient(W/2,H/2,H*.14,W/2,H/2,H*.72);
+  vig.addColorStop(0,'rgba(0,0,0,0)'); vig.addColorStop(1,'rgba(0,0,0,.48)');
   mc.fillStyle = vig; mc.fillRect(0, 0, W, H);
+
 })();
 
 // ─── Particles ────────────────────────────────────────────────────
@@ -176,243 +266,133 @@ function addParticles(x, y, n = 3) {
     const ang = Math.random() * Math.PI * 2;
     const spd = .8 + Math.random() * 3.5;
     particles.push({
-      x, y,
-      vx: Math.cos(ang) * spd,
-      vy: Math.sin(ang) * spd - .5,
-      life: 1,
-      dec: .028 + Math.random() * .05,
-      r: .6 + Math.random() * 1.6,
-      warm: Math.random() > .45
+      x, y, vx: Math.cos(ang)*spd, vy: Math.sin(ang)*spd-.5,
+      life: 1, dec: .026+Math.random()*.048,
+      r: .6+Math.random()*1.6, warm: Math.random()>.42
     });
   }
 }
 function drawParticles() {
   particles = particles.filter(p => p.life > .02);
   for (const p of particles) {
-    p.x += p.vx; p.y += p.vy;
-    p.vy += .12; p.vx *= .97;
-    p.life -= p.dec;
-    const a = p.life * .85;
-    ctx.save();
-    ctx.globalAlpha = a;
-    ctx.shadowColor = p.warm ? 'rgba(255,160,0,.6)' : 'rgba(255,220,80,.6)';
-    ctx.shadowBlur = 5;
-    ctx.fillStyle = p.warm ? `rgb(255,${(100 + p.life*120)|0},0)` : `rgb(255,${(200+p.life*55)|0},50)`;
-    ctx.beginPath(); ctx.arc(p.x, p.y, p.r * p.life + .3, 0, Math.PI*2); ctx.fill();
-    ctx.restore();
+    p.x+=p.vx; p.y+=p.vy; p.vy+=.11; p.vx*=.97; p.life-=p.dec;
+    ctx.save(); ctx.globalAlpha=p.life*.85;
+    ctx.shadowColor=p.warm?'rgba(255,160,0,.6)':'rgba(255,220,80,.6)'; ctx.shadowBlur=5;
+    ctx.fillStyle=p.warm?`rgb(255,${(100+p.life*120)|0},0)`:`rgb(255,${(200+p.life*55)|0},50)`;
+    ctx.beginPath(); ctx.arc(p.x,p.y,p.r*p.life+.3,0,Math.PI*2); ctx.fill(); ctx.restore();
   }
 }
 
-// ─── Draw seam path up to progress t ─────────────────────────────
-function drawSeam(path, t, alpha = 1) {
-  if (t <= 0 || alpha <= 0) return;
-  const total = pathLen(path);
-  ctx.save(); ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-
-  // Outer diffuse glow
-  ctx.globalAlpha = alpha * .35;
-  ctx.strokeStyle = 'rgba(255,110,10,1)';
-  ctx.lineWidth = 10; ctx.shadowColor = 'rgba(255,130,0,.7)'; ctx.shadowBlur = 18;
-  _strokePathT(path, t, total);
-
-  // Mid glow
-  ctx.globalAlpha = alpha * .65;
-  ctx.strokeStyle = 'rgba(255,190,50,1)';
-  ctx.lineWidth = 3.5; ctx.shadowBlur = 10;
-  _strokePathT(path, t, total);
-
-  // Bright core
-  ctx.globalAlpha = alpha * .9;
-  ctx.strokeStyle = 'rgba(255,248,210,1)';
-  ctx.lineWidth = 1.2; ctx.shadowColor = 'rgba(255,240,150,.9)'; ctx.shadowBlur = 6;
-  _strokePathT(path, t, total);
-
-  ctx.restore();
+// ─── Seam draw ────────────────────────────────────────────────────
+function drawSeam(path, t, alpha=1) {
+  if (t<=0||alpha<=0) return;
+  const total=pathLen(path);
+  ctx.save(); ctx.lineCap='round'; ctx.lineJoin='round';
+  ctx.globalAlpha=alpha*.28; ctx.strokeStyle='rgba(255,100,8,1)';
+  ctx.lineWidth=12; ctx.shadowColor='rgba(255,110,0,.7)'; ctx.shadowBlur=22;
+  _strokeT(path,t,total);
+  ctx.globalAlpha=alpha*.60; ctx.strokeStyle='rgba(255,185,40,1)';
+  ctx.lineWidth=4; ctx.shadowBlur=11; _strokeT(path,t,total);
+  ctx.globalAlpha=alpha*.90; ctx.strokeStyle='rgba(255,248,210,1)';
+  ctx.lineWidth=1.3; ctx.shadowColor='rgba(255,235,140,.9)'; ctx.shadowBlur=6;
+  _strokeT(path,t,total); ctx.restore();
 }
-function _strokePathT(path, t, total) {
-  let rem = t * total;
-  ctx.beginPath();
-  ctx.moveTo(path[0].ax, path[0].ay);
+function _strokeT(path, t, total) {
+  let rem=t*total;
+  ctx.beginPath(); ctx.moveTo(path[0].ax,path[0].ay);
   for (const s of path) {
-    const l = segLen(s);
-    if (rem <= 0) break;
-    if (rem >= l) { ctx.lineTo(s.bx, s.by); rem -= l; }
-    else {
-      const f = rem / l;
-      ctx.lineTo(s.ax + (s.bx - s.ax) * f, s.ay + (s.by - s.ay) * f);
-      rem = 0;
-    }
+    const l=segLen(s); if (rem<=0) break;
+    if (rem>=l){ctx.lineTo(s.bx,s.by);rem-=l;}
+    else{const f=rem/l;ctx.lineTo(s.ax+(s.bx-s.ax)*f,s.ay+(s.by-s.ay)*f);rem=0;}
   }
   ctx.stroke();
 }
 
-// ─── Draw spark head ──────────────────────────────────────────────
-function drawSparkHead(x, y, size = 1, alpha = 1) {
-  ctx.save();
-  ctx.globalAlpha = alpha;
-  const og = ctx.createRadialGradient(x, y, 0, x, y, 28 * size);
-  og.addColorStop(0,   'rgba(255,255,220,1)');
-  og.addColorStop(.18, 'rgba(255,210,60,.85)');
-  og.addColorStop(.5,  'rgba(255,100,10,.45)');
-  og.addColorStop(1,   'rgba(255,40,0,0)');
-  ctx.fillStyle = og;
-  ctx.beginPath(); ctx.arc(x, y, 28 * size, 0, Math.PI*2); ctx.fill();
-  ctx.shadowColor = 'rgba(255,200,80,.9)'; ctx.shadowBlur = 12;
-  ctx.fillStyle = `rgba(255,255,255,${alpha})`;
-  ctx.beginPath(); ctx.arc(x, y, 3.5 * size, 0, Math.PI*2); ctx.fill();
-  ctx.restore();
+function drawSparkHead(x,y,size=1,alpha=1) {
+  ctx.save(); ctx.globalAlpha=alpha;
+  const og=ctx.createRadialGradient(x,y,0,x,y,28*size);
+  og.addColorStop(0,'rgba(255,255,220,1)'); og.addColorStop(.2,'rgba(255,210,60,.85)');
+  og.addColorStop(.5,'rgba(255,100,10,.45)'); og.addColorStop(1,'rgba(255,40,0,0)');
+  ctx.fillStyle=og; ctx.beginPath(); ctx.arc(x,y,28*size,0,Math.PI*2); ctx.fill();
+  ctx.shadowColor='rgba(255,200,80,.9)'; ctx.shadowBlur=12;
+  ctx.fillStyle=`rgba(255,255,255,${alpha})`;
+  ctx.beginPath(); ctx.arc(x,y,3.5*size,0,Math.PI*2); ctx.fill(); ctx.restore();
 }
 
-// ─── Clip helpers for door panels ────────────────────────────────
-// Seam polygon edge (top → bottom) shared by both panels
-// Top of seam: UP[2].b = (cx, 0)
-// Upper seam nodes (top→origin): UP reversed from-endpoints
-// Lower seam nodes (origin→bottom): DOWN to-endpoints
-function _buildSeamEdge() {
-  const topX = UP[UP.length - 1].bx, topY = UP[UP.length - 1].by;
-  ctx.lineTo(topX, topY);
-  for (let i = UP.length - 1; i >= 0; i--) ctx.lineTo(UP[i].ax, UP[i].ay);
-  for (const s of DOWN) ctx.lineTo(s.bx, s.by);
+function _seamEdge() {
+  ctx.lineTo(UP[UP.length-1].bx,UP[UP.length-1].by);
+  for(let i=UP.length-1;i>=0;i--) ctx.lineTo(UP[i].ax,UP[i].ay);
+  for(const s of DOWN) ctx.lineTo(s.bx,s.by);
 }
-function clipLeft() {
-  ctx.beginPath();
-  ctx.moveTo(0, 0);
-  _buildSeamEdge();
-  ctx.lineTo(0, H);
-  ctx.closePath(); ctx.clip();
-}
-function clipRight() {
-  ctx.beginPath();
-  ctx.moveTo(W, 0);
-  _buildSeamEdge();
-  ctx.lineTo(W, H);
-  ctx.closePath(); ctx.clip();
-}
+function clipLeft()  {ctx.beginPath();ctx.moveTo(0,0);_seamEdge();ctx.lineTo(0,H);ctx.closePath();ctx.clip();}
+function clipRight() {ctx.beginPath();ctx.moveTo(W,0);_seamEdge();ctx.lineTo(W,H);ctx.closePath();ctx.clip();}
 
-// ─── Easing ───────────────────────────────────────────────────────
-const ease   = t => t < .5 ? 2*t*t : -1+(4-2*t)*t;
-const easeIn = t => t * t * t;
+const ease   = t => t<.5?2*t*t:-1+(4-2*t)*t;
+const easeIn = t => t*t*t;
 
-// ─── Animation state ──────────────────────────────────────────────
-const PHASE = { WAIT:0, IGNITE:1, SEAM:2, FLASH:3, OPEN:4, DONE:5 };
-const DUR   = [500,    500,     2300,    280,     1700,    0];
-let phase = PHASE.WAIT, phaseStart = null;
+const PHASE={WAIT:0,IGNITE:1,SEAM:2,FLASH:3,OPEN:4,DONE:5};
+const DUR  =[500,560,2700,310,2000,0];
+let phase=PHASE.WAIT,phaseStart=null;
+function phaseT(ts){return phaseStart?Math.min((ts-phaseStart)/(DUR[phase]||1),1):0;}
 
-function phaseT(ts) {
-  return phaseStart ? Math.min((ts - phaseStart) / (DUR[phase] || 1), 1) : 0;
-}
-
-// ─── Main render loop ─────────────────────────────────────────────
 function frame(ts) {
-  if (phaseStart === null) phaseStart = ts;
-  const t = phaseT(ts);
+  if(phaseStart===null) phaseStart=ts;
+  const t=phaseT(ts);
+  ctx.fillStyle='#000'; ctx.fillRect(0,0,W,H);
 
-  // Black backdrop
-  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+  if(phase===PHASE.WAIT){
+    ctx.drawImage(metal,0,0);
+    if(t>=1){phase=PHASE.IGNITE;phaseStart=ts;}
 
-  if (phase === PHASE.WAIT) {
-    ctx.drawImage(metal, 0, 0);
-    if (t >= 1) { phase = PHASE.IGNITE; phaseStart = ts; }
-
-  } else if (phase === PHASE.IGNITE) {
-    ctx.drawImage(metal, 0, 0);
-    const intens = ease(t);
-    const flicker = .85 + Math.sin(ts * .055) * .15;
-    drawSparkHead(cx, cy, .6 + intens * .8, intens * flicker);
-    if (Math.random() < .6) addParticles(cx, cy, 2);
+  }else if(phase===PHASE.IGNITE){
+    ctx.drawImage(metal,0,0);
+    const intens=ease(t),flicker=.85+Math.sin(ts*.055)*.15;
+    drawSparkHead(cx,cy,.6+intens*.8,intens*flicker);
+    if(Math.random()<.6) addParticles(cx,cy,2);
     drawParticles();
-    if (t >= 1) { phase = PHASE.SEAM; phaseStart = ts; }
+    if(t>=1){phase=PHASE.SEAM;phaseStart=ts;}
 
-  } else if (phase === PHASE.SEAM) {
-    ctx.drawImage(metal, 0, 0);
-
-    // Use a curve that accelerates then settles
-    const sp = ease(t);
-
-    drawSeam(UP,   sp);
-    drawSeam(DOWN, sp);
-
-    const uPos = pointAt(UP,   sp);
-    const dPos = pointAt(DOWN, sp);
-
-    drawSparkHead(uPos.x, uPos.y, .85);
-    drawSparkHead(dPos.x, dPos.y, .85);
-
-    if (Math.random() < .7) addParticles(uPos.x, uPos.y, 2);
-    if (Math.random() < .7) addParticles(dPos.x, dPos.y, 2);
+  }else if(phase===PHASE.SEAM){
+    ctx.drawImage(metal,0,0);
+    const sp=ease(t);
+    drawSeam(UP,sp); drawSeam(DOWN,sp);
+    const uP=pointAt(UP,sp),dP=pointAt(DOWN,sp);
+    drawSparkHead(uP.x,uP.y,.85); drawSparkHead(dP.x,dP.y,.85);
+    if(Math.random()<.70){addParticles(uP.x,uP.y,2);}
+    if(Math.random()<.70){addParticles(dP.x,dP.y,2);}
     drawParticles();
+    if(t>=1){phase=PHASE.FLASH;phaseStart=ts;}
 
-    if (t >= 1) { phase = PHASE.FLASH; phaseStart = ts; }
-
-  } else if (phase === PHASE.FLASH) {
-    ctx.drawImage(metal, 0, 0);
-    drawSeam(UP,   1);
-    drawSeam(DOWN, 1);
-
-    // Flash burst
-    const ft = Math.sin(t * Math.PI);
-    ctx.save();
-    ctx.globalAlpha = ft * .45;
-    ctx.fillStyle = 'rgba(255,215,90,1)';
-    ctx.fillRect(0, 0, W, H);
-    ctx.restore();
-
+  }else if(phase===PHASE.FLASH){
+    ctx.drawImage(metal,0,0);
+    drawSeam(UP,1); drawSeam(DOWN,1);
+    const ft=Math.sin(t*Math.PI);
+    ctx.save(); ctx.globalAlpha=ft*.40;
+    ctx.fillStyle='rgba(255,200,70,1)'; ctx.fillRect(0,0,W,H); ctx.restore();
     drawParticles();
-    if (t >= 1) { phase = PHASE.OPEN; phaseStart = ts; }
+    if(t>=1){phase=PHASE.OPEN;phaseStart=ts;}
 
-  } else if (phase === PHASE.OPEN) {
-    // ease-in so the heavy door starts with weight, then gains momentum
-    const op = easeIn(t);
-    const slide = op * (W * .55 + 240);
-
-    // Left panel sliding left
-    ctx.save();
-    ctx.translate(-slide, 0);
-    clipLeft();
-    ctx.drawImage(metal, 0, 0);
-    ctx.restore();
-
-    // Right panel sliding right
-    ctx.save();
-    ctx.translate(slide, 0);
-    clipRight();
-    ctx.drawImage(metal, 0, 0);
-    ctx.restore();
-
-    // Crack glow at original seam position (fades as gap widens)
-    const crackAlpha = Math.max(0, 1 - t * 2.2);
-    if (crackAlpha > 0) {
-      drawSeam(UP,   1, crackAlpha);
-      drawSeam(DOWN, 1, crackAlpha);
-    }
-
-    // Ambient light spilling from the gap (bright line along seam)
-    if (t < .45) {
-      ctx.save();
-      ctx.globalAlpha = (1 - t * 2.2) * .55;
-      ctx.shadowColor = 'rgba(255,180,50,.9)';
-      ctx.shadowBlur = 30 + slide * .08;
-      ctx.strokeStyle = 'rgba(255,230,140,.7)';
-      ctx.lineWidth = 1.5;
-      // Draw full seam in one path
+  }else if(phase===PHASE.OPEN){
+    const op=easeIn(t),slide=op*(W*.55+260);
+    ctx.save();ctx.translate(-slide,0);clipLeft(); ctx.drawImage(metal,0,0);ctx.restore();
+    ctx.save();ctx.translate(+slide,0);clipRight();ctx.drawImage(metal,0,0);ctx.restore();
+    const ca=Math.max(0,1-t*2.0);
+    if(ca>0){drawSeam(UP,1,ca);drawSeam(DOWN,1,ca);}
+    if(t<.42){
+      ctx.save(); ctx.globalAlpha=(1-t/.42)*.48;
+      ctx.shadowColor='rgba(255,165,35,.9)'; ctx.shadowBlur=28+slide*.06;
+      ctx.strokeStyle='rgba(255,220,120,.62)'; ctx.lineWidth=1.4;
       ctx.beginPath();
-      ctx.moveTo(UP[UP.length-1].bx, UP[UP.length-1].by);
-      for (let i = UP.length-1; i >= 0; i--) ctx.lineTo(UP[i].ax, UP[i].ay);
-      for (const s of DOWN) ctx.lineTo(s.bx, s.by);
-      ctx.stroke();
-      ctx.restore();
+      ctx.moveTo(UP[UP.length-1].bx,UP[UP.length-1].by);
+      for(let i=UP.length-1;i>=0;i--) ctx.lineTo(UP[i].ax,UP[i].ay);
+      for(const s of DOWN) ctx.lineTo(s.bx,s.by);
+      ctx.stroke(); ctx.restore();
     }
-
     drawParticles();
-    if (t >= 1) { phase = PHASE.DONE; phaseStart = ts; }
-
-  } else {
-    // Done — black remains
+    if(t>=1){phase=PHASE.DONE;}
   }
-
   requestAnimationFrame(frame);
 }
-
 requestAnimationFrame(frame);
 </script>
 </body>

@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HUD Loader</title>
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+:root {
+  --cyan: #00e5ff;
+  --cyan-dim: #0097a7;
+  --cyan-glow: rgba(0,229,255,0.18);
+  --cyan-bright: #80ffff;
+  --bg: #020c10;
+}
+
+html, body {
+  width: 100%; height: 100%;
+  background: var(--bg);
+  display: flex; align-items: center; justify-content: center;
+  overflow: hidden;
+  font-family: 'Share Tech Mono', monospace;
+}
+
+body::before {
+  content: '';
+  position: fixed; inset: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    rgba(0,0,0,0.08) 0px, rgba(0,0,0,0.08) 1px,
+    transparent 1px, transparent 3px
+  );
+  pointer-events: none; z-index: 100;
+}
+
+/* ── WRAPPER ── */
+.hud-widget {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  opacity: 0;
+  animation: widgetIn 0.6s cubic-bezier(0.2,0,0.1,1) 0.3s forwards,
+             flicker 7s infinite 1.5s;
+}
+
+@keyframes widgetIn {
+  from { opacity: 0; transform: scaleX(0.85); filter: brightness(2); }
+  to   { opacity: 1; transform: scaleX(1);    filter: brightness(1); }
+}
+@keyframes flicker {
+  0%,100%{opacity:1;} 92%{opacity:1;} 93%{opacity:0.85;} 94%{opacity:1;} 96%{opacity:0.92;} 97%{opacity:1;}
+}
+
+/* ── DIAL ── */
+.dial-wrap {
+  position: relative;
+  width: 170px; height: 170px;
+  flex-shrink: 0;
+}
+.dial-wrap canvas {
+  position: absolute; inset: 0;
+}
+.dial-center {
+  position: absolute; inset: 0;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  gap: 3px;
+}
+.dial-pct {
+  font-family: 'Orbitron', monospace;
+  font-size: 24px; font-weight: 900;
+  color: var(--cyan-bright);
+  text-shadow: 0 0 12px var(--cyan), 0 0 28px var(--cyan);
+  letter-spacing: 0.04em;
+}
+.dial-label {
+  font-size: 8px; color: var(--cyan-dim);
+  letter-spacing: 0.18em; text-transform: uppercase;
+}
+
+/* ── BAR PANEL ── */
+.bar-panel {
+  width: 430px;
+  padding: 0 0 0 8px;
+}
+.bar-panel-inner {
+  position: relative;
+  border: 1px solid rgba(0,229,255,0.15);
+  padding: 14px 18px;
+  background: rgba(0,20,30,0.65);
+  clip-path: polygon(0 0, calc(100% - 16px) 0, 100% 16px, 100% 100%, 16px 100%, 0 100%);
+}
+
+/* corner brackets */
+.bracket { position: absolute; width: 12px; height: 12px; border-color: var(--cyan); border-style: solid; opacity: 0.5; }
+.bracket.tl { top:3px;left:3px;   border-width:1.5px 0 0 1.5px; }
+.bracket.tr { top:3px;right:3px;  border-width:1.5px 1.5px 0 0; }
+.bracket.bl { bottom:3px;left:3px;  border-width:0 0 1.5px 1.5px; }
+.bracket.br { bottom:3px;right:3px; border-width:0 1.5px 1.5px 0; }
+
+/* Top label row */
+.bar-top {
+  display: flex; align-items: center; gap: 10px;
+  margin-bottom: 10px;
+}
+.bar-top-label {
+  font-family: 'Orbitron', monospace;
+  font-size: 20px; font-weight: 700;
+  color: var(--cyan);
+  text-shadow: 0 0 10px var(--cyan), 0 0 22px rgba(0,229,255,0.5);
+  letter-spacing: 0.12em;
+}
+.dots-anim span {
+  color: var(--cyan); font-size: 20px; line-height: 1;
+  animation: dotPulse 1.2s infinite;
+  text-shadow: 0 0 8px var(--cyan);
+}
+.dots-anim span:nth-child(2){animation-delay:.2s;}
+.dots-anim span:nth-child(3){animation-delay:.4s;}
+@keyframes dotPulse {
+  0%,80%,100%{opacity:1;} 40%{opacity:0.12;}
+}
+.sector-block {
+  margin-left: auto;
+  font-size: 7.5px; color: var(--cyan-dim);
+  letter-spacing: 0.08em; line-height: 1.8;
+  border-left: 1px solid rgba(0,180,220,0.3);
+  padding-left: 6px; opacity: 0.75;
+}
+
+/* ── SEGMENTED SLANT BAR ── */
+.seg-bar {
+  display: flex;
+  align-items: stretch;
+  gap: 3px;
+  height: 22px;
+  margin-bottom: 8px;
+}
+
+.seg {
+  flex: 1;
+  position: relative;
+  /* Slanted via clip-path — left edge cuts in, right edge cuts out */
+  clip-path: polygon(5px 0%, 100% 0%, calc(100% - 5px) 100%, 0% 100%);
+  background: rgba(0,180,220,0.06);
+  border: 1px solid rgba(0,229,255,0.12);
+  transition: background 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+}
+.seg.lit {
+  background: repeating-linear-gradient(
+    -52deg,
+    rgba(0,229,255,0.72) 0px,
+    rgba(0,229,255,0.72) 5px,
+    rgba(0,200,230,0.35) 5px,
+    rgba(0,200,230,0.35) 10px
+  );
+  border-color: rgba(0,229,255,0.55);
+  box-shadow: 0 0 8px rgba(0,229,255,0.35), inset 0 1px 0 rgba(255,255,255,0.08);
+}
+.seg.lit::after {
+  content: '';
+  position: absolute; inset: 0;
+  background: linear-gradient(180deg, rgba(255,255,255,0.10) 0%, transparent 55%);
+}
+
+/* ── DOT ROW ── */
+.dot-bar {
+  display: flex; align-items: center; gap: 3px; flex-wrap: nowrap;
+}
+.dot-bar span {
+  display: block; width: 5px; height: 5px; border-radius: 1px;
+  background: var(--cyan-dim); opacity: 0.2;
+  transition: opacity .2s, background .2s, box-shadow .2s;
+}
+.dot-bar span.active {
+  opacity: 1; background: var(--cyan); box-shadow: 0 0 6px var(--cyan);
+}
+
+/* tick marks */
+.tick-row { display: flex; align-items: flex-end; gap: 2px; margin-left: 6px; }
+.tick-row span {
+  display: block; width: 2px; background: var(--cyan-dim); opacity: 0.45;
+  animation: tickPulse 1.8s infinite alternate;
+}
+.tick-row span:nth-child(odd)  { height: 6px;  animation-delay: calc(var(--i)*0.07s); }
+.tick-row span:nth-child(even) { height: 10px; animation-delay: calc(var(--i)*0.07s + 0.09s); }
+@keyframes tickPulse {
+  from{opacity:0.25;} to{opacity:0.85;background:var(--cyan);}
+}
+
+/* bottom row */
+.bar-bottom {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-top: 7px;
+}
+.bar-b1 { font-size: 8px; color: var(--cyan-dim); letter-spacing: 0.12em; }
+.tag-label {
+  font-size: 9px; color: var(--cyan); letter-spacing: 0.14em;
+  border: 1px solid rgba(0,229,255,0.35);
+  padding: 2px 7px;
+  clip-path: polygon(4px 0%,100% 0%,calc(100% - 4px) 100%,0% 100%);
+  background: rgba(0,229,255,0.07);
+  text-shadow: 0 0 6px var(--cyan);
+}
+</style>
+</head>
+<body>
+
+<div class="hud-widget">
+
+  <!-- DIAL -->
+  <div class="dial-wrap">
+    <canvas id="dialCanvas" width="170" height="170"></canvas>
+    <div class="dial-center">
+      <div class="dial-pct" id="dialPct">0%</div>
+      <div class="dial-label">LOADING</div>
+    </div>
+  </div>
+
+  <!-- BAR PANEL -->
+  <div class="bar-panel">
+    <div class="bar-panel-inner">
+      <div class="bracket tl"></div><div class="bracket tr"></div>
+      <div class="bracket bl"></div><div class="bracket br"></div>
+
+      <!-- Label row — NO percent readout -->
+      <div class="bar-top">
+        <span class="bar-top-label">LOADING<span class="dots-anim"><span>.</span><span>.</span><span>.</span></span></span>
+        <div class="sector-block">
+          SECTOR 25 │ 49<br>
+          SECTOR 32 │ 33
+        </div>
+      </div>
+
+      <!-- Segmented slant bar -->
+      <div class="seg-bar" id="segBar"></div>
+
+      <!-- Dot + tick row -->
+      <div style="display:flex;align-items:center;gap:0;">
+        <div class="dot-bar" id="dotBar"></div>
+        <div class="tick-row" id="tickRow"></div>
+      </div>
+
+      <!-- Bottom status -->
+      <div class="bar-bottom">
+        <span class="bar-b1" id="statusText">INITIALIZING SEQUENCE...</span>
+        <span class="tag-label">B1 · B2</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── Build seg bar (22 slant segments) ──
+const SEG_COUNT = 22;
+const segBar    = document.getElementById('segBar');
+for (let i = 0; i < SEG_COUNT; i++) {
+  const d = document.createElement('div');
+  d.className = 'seg';
+  segBar.appendChild(d);
+}
+const segs = segBar.querySelectorAll('.seg');
+
+// ── Build dot bar ──
+const DOT_COUNT = 36;
+const dotBar    = document.getElementById('dotBar');
+for (let i = 0; i < DOT_COUNT; i++) {
+  const s = document.createElement('span'); dotBar.appendChild(s);
+}
+
+// ── Build tick row ──
+const tickRow = document.getElementById('tickRow');
+for (let i = 0; i < 28; i++) {
+  const s = document.createElement('span');
+  s.style.setProperty('--i', i); tickRow.appendChild(s);
+}
+
+// ── Canvas dial ──
+const canvas = document.getElementById('dialCanvas');
+const dctx   = canvas.getContext('2d');
+const DW = canvas.width, DH = canvas.height;
+const DCX = DW/2, DCY = DH/2;
+const CYAN = '#00e5ff';
+
+function drawDial(progress) {
+  dctx.clearRect(0, 0, DW, DH);
+  const startAngle = -Math.PI * 0.75;
+  const totalArc   =  Math.PI * 1.5;
+  const spin = (Date.now() * 0.0006) % (Math.PI * 2);
+
+  // Outer ambient glow
+  dctx.save();
+  dctx.beginPath();
+  dctx.arc(DCX, DCY, 80, 0, Math.PI*2);
+  dctx.strokeStyle = 'rgba(0,229,255,0.06)';
+  dctx.lineWidth = 14;
+  dctx.stroke();
+  dctx.restore();
+
+  // ── Outermost dashed ring ──
+  const dashCount = 48;
+  const dashArc   = (Math.PI*2)/dashCount;
+  for (let i = 0; i < dashCount; i++) {
+    const a1 = i*dashArc, a2 = a1 + dashArc*0.55;
+    dctx.beginPath();
+    dctx.arc(DCX, DCY, 79, a1, a2);
+    dctx.strokeStyle = 'rgba(0,200,230,0.22)';
+    dctx.lineWidth = 3;      // THICKER
+    dctx.stroke();
+  }
+
+  // ── Progress arc — track ──
+  dctx.beginPath();
+  dctx.arc(DCX, DCY, 68, startAngle, startAngle + totalArc);
+  dctx.strokeStyle = 'rgba(0,130,160,0.22)';
+  dctx.lineWidth = 8;        // THICKER
+  dctx.stroke();
+
+  // ── Progress arc — fill ──
+  if (progress > 0) {
+    const endA = startAngle + totalArc * progress;
+    const gx1  = DCX + Math.cos(startAngle) * 68;
+    const gy1  = DCY + Math.sin(startAngle) * 68;
+    const gx2  = DCX + Math.cos(endA) * 68;
+    const gy2  = DCY + Math.sin(endA) * 68;
+    const grad = dctx.createLinearGradient(gx1, gy1, gx2, gy2);
+    grad.addColorStop(0,   'rgba(0,150,200,0.85)');
+    grad.addColorStop(0.5, CYAN);
+    grad.addColorStop(1,   '#b0ffff');
+    dctx.save();
+    dctx.shadowColor = CYAN; dctx.shadowBlur = 10;
+    dctx.beginPath();
+    dctx.arc(DCX, DCY, 68, startAngle, endA);
+    dctx.strokeStyle = grad;
+    dctx.lineWidth = 8;      // THICKER
+    dctx.stroke();
+    dctx.restore();
+  }
+
+  // ── Tick marks — 24 ──
+  for (let i = 0; i < 24; i++) {
+    const angle   = (Math.PI*2/24)*i - Math.PI/2;
+    const isMajor = i%6===0;
+    const r1 = isMajor ? 53 : 55;
+    const r2 = 61;
+    const lit = (i/24) <= progress;
+    dctx.beginPath();
+    dctx.moveTo(DCX+Math.cos(angle)*r1, DCY+Math.sin(angle)*r1);
+    dctx.lineTo(DCX+Math.cos(angle)*r2, DCY+Math.sin(angle)*r2);
+    dctx.strokeStyle = lit ? CYAN : 'rgba(0,180,200,0.18)';
+    dctx.lineWidth   = isMajor ? 3 : 2;   // THICKER
+    dctx.stroke();
+  }
+
+  // ── Inner spinning segmented ring ──
+  for (let i = 0; i < 16; i++) {
+    const angle = (Math.PI*2/16)*i + spin;
+    const on    = i%2===0;
+    dctx.beginPath();
+    dctx.arc(DCX, DCY, 44, angle, angle + Math.PI*2/16*0.55);
+    dctx.strokeStyle = on ? 'rgba(0,229,255,0.50)' : 'rgba(0,100,140,0.12)';
+    dctx.lineWidth = 4;      // THICKER
+    dctx.stroke();
+  }
+
+  // ── Innermost static ring ──
+  dctx.beginPath();
+  dctx.arc(DCX, DCY, 34, 0, Math.PI*2);
+  dctx.strokeStyle = 'rgba(0,180,220,0.20)';
+  dctx.lineWidth = 2;
+  dctx.stroke();
+
+  // ── Center fill ──
+  const cg = dctx.createRadialGradient(DCX, DCY-4, 0, DCX, DCY, 32);
+  cg.addColorStop(0,   'rgba(0,60,80,0.92)');
+  cg.addColorStop(0.6, 'rgba(0,28,42,0.96)');
+  cg.addColorStop(1,   'rgba(0,14,24,1)');
+  dctx.beginPath(); dctx.arc(DCX, DCY, 32, 0, Math.PI*2);
+  dctx.fillStyle = cg; dctx.fill();
+
+  // ── Side chevrons ──
+  [[-1, DCX-80],[+1, DCX+80]].forEach(([dir, x]) => {
+    const bs = 7;
+    dctx.beginPath();
+    dctx.moveTo(x+dir*bs, DCY-bs);
+    dctx.lineTo(x,        DCY);
+    dctx.lineTo(x+dir*bs, DCY+bs);
+    dctx.strokeStyle = 'rgba(0,229,255,0.55)';
+    dctx.lineWidth = 2;
+    dctx.stroke();
+  });
+}
+
+// ── State ──
+let progress  = 0;
+let lastTime  = null;
+const TARGET  = 1.00;
+
+// Segments light up one by one — track the float index
+let litCount  = 0;
+
+const statusMessages = [
+  'INITIALIZING SEQUENCE...',
+  'SYNCING SECTOR NODES...',
+  'LOADING DATA BLOCKS...',
+  'VERIFYING CHECKSUMS...',
+  'CALIBRATING ARRAY...',
+  'SYSTEM READY',
+];
+
+function updateSegs(p) {
+  // How many segments should be lit
+  const target = Math.round(p * SEG_COUNT);
+  // Animate one at a time using litCount
+  if (litCount < target) litCount++;
+  if (litCount > target) litCount = target; // if reset
+  segs.forEach((s, i) => s.classList.toggle('lit', i < litCount));
+}
+
+function updateDots(p) {
+  const filled = Math.round(p * DOT_COUNT);
+  dotBar.querySelectorAll('span').forEach((s,i) =>
+    s.classList.toggle('active', i < filled)
+  );
+}
+
+function frame(ts) {
+  if (!lastTime) lastTime = ts;
+  const dt = Math.min(ts - lastTime, 50);
+  lastTime = ts;
+
+  const speed = 0.00016 * dt;
+  if (progress < TARGET) {
+    progress = Math.min(progress + speed, TARGET);
+  } else {
+    if (!frame._holdStart) frame._holdStart = ts;
+    if (ts - frame._holdStart > 2200) {
+      progress    = 0;
+      litCount    = 0;
+      frame._holdStart = null;
+    }
+  }
+
+  const pct = Math.round(progress * 100);
+  document.getElementById('dialPct').textContent = pct + '%';
+
+  const msgIdx = Math.min(Math.floor(progress / TARGET * (statusMessages.length-1)), statusMessages.length-1);
+  document.getElementById('statusText').textContent = statusMessages[msgIdx];
+
+  updateSegs(progress / TARGET);
+  updateDots(progress / TARGET);
+  drawDial(progress / TARGET);
+
+  requestAnimationFrame(frame);
+}
+
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
